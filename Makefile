@@ -1,6 +1,6 @@
 .PHONY: all bin/cli peclet-sweep grid-sweep
 
-all: bin/cli peclet-sweep grid-sweep
+all: bin/cli
 
 bin/cli:
 	go build -o ./bin/cli .
