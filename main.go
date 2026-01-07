@@ -29,45 +29,74 @@ const (
 	PHI_L float64 = 20  // "rightmost"
 
 	// sentinel values
-	BOUNDARY_INDEX int = -1
+	LEFT_BOUND_MARKER  int32 = -1
+	RIGHT_BOUND_MARKER int32 = -2
 )
 
 //
-// Main entrypoint
+// Main entrypoint and core functionality (ie look here first)
 //
 
-// TODO get flags to work for velocity and number of cells (ostensibly dx)
+// TODO get flags to work for velocity and number of cells (which ostensibly is dx)
 
 func main() {
 	numCells := 10
 	var velocity float64 = 5
 	mesh := New1DMesh(LENGTH, numCells)
 	analytic := CalculateAnalytical(mesh, velocity)
+	numericCDS := CalculateNumeric(mesh, velocity, DivOperatorCDS)
 
-	WriteToCSV(os.Stdout, mesh, analytic)
+	WriteToCSV(os.Stdout, mesh, analytic, numericCDS)
+}
+
+func CalculateAnalytical(mesh *Mesh, velocity float64) []float64 {
+	field := make([]float64, mesh.numCells)
+
+	for i := range field {
+		x := mesh.centroids[i]
+		coeff := (math.Exp(RHO*velocity*x/GAMMA) - 1) /
+			(math.Exp(RHO*velocity*LENGTH/GAMMA) - 1)
+		field[i] = PHI_0 + coeff*(PHI_L-PHI_0)
+	}
+
+	return field
+}
+
+func CalculateNumeric(mesh *Mesh, velocity float64, divOp DivOp) []float64 {
+	field := make([]float64, mesh.numCells)
+	system := NewFVSystem(mesh)
+
+	// 1) apply laplacian operator
+	LaplacianOperator(mesh, system.matrix, GAMMA)
+
+	// 2) apply divergence operator (using function pointer parameter)
+	divOp(mesh, system.matrix, RHO, velocity)
+
+	// 3) apply boundary conditions (they contribute to diagonal and RHS)
+	DirichletBC(system, PHI_0, LEFT_BOUND_MARKER)
+	DirichletBC(system, PHI_L, RIGHT_BOUND_MARKER)
+	
+	// 4) solve the matrix
+	system.SolveCG(field, 1e-6, 50)
+
+	return field
 }
 
 //
-// Data structures
+// Meshing and geometry
 //
-
-// Based on the following
-// https://openfoamwiki.net/index.php/OpenFOAM_guide/Matrices_in_OpenFOAM
-type LDUMatrix struct {
-	diag  []float64 // indexed by cell
-	lower []float64 // indexed by face
-	upper []float64 // indexed by face
-}
 
 // Each connection corresponds to a face connecting two centroids.  These are
 // demarcated as owner/neighbour for distinguishing flux signs.
 type Connection struct {
-	owner     int
-	neighbour int
+	owner     int32
+	neighbour int32
 }
 
 type Mesh struct {
+	// useful metadata
 	numCells int
+	numConns int
 
 	// indexed by cell
 	centroids []float64
@@ -78,10 +107,6 @@ type Mesh struct {
 	connDists   []float64
 	faceAreas   []float64 // in 1D this is moot but may as well be consistent with literature
 }
-
-//
-// "Meshing"
-//
 
 // Creates a 1D mesh WITHOUT half cells at boundaries
 func New1DMesh(length float64, numCells int) *Mesh {
@@ -103,24 +128,25 @@ func New1DMesh(length float64, numCells int) *Mesh {
 
 	// internal connections
 	for i := range numInternalConnections {
-		connections[i+1] = Connection{owner: i, neighbour: i + 1}
+		connections[i+1] = Connection{owner: int32(i), neighbour: int32(i + 1)}
 		connDists[i+1] = dx
 		faceAreas[i+1] = 1
 	}
 
 	// leftmost boundary
-	connections[0] = Connection{owner: 0, neighbour: BOUNDARY_INDEX}
+	connections[0] = Connection{owner: 0, neighbour: LEFT_BOUND_MARKER}
 	connDists[0] = dx / 2 // half distance because of boundary
 	faceAreas[0] = 1
 
 	// rightmost boundary
 	rmIdx := totalConnections - 1
-	connections[rmIdx] = Connection{owner: 0, neighbour: BOUNDARY_INDEX}
+	connections[rmIdx] = Connection{owner: int32(numCells - 1), neighbour: RIGHT_BOUND_MARKER}
 	connDists[rmIdx] = dx / 2
 	faceAreas[rmIdx] = 1
 
 	return &Mesh{
 		numCells:    numCells,
+		numConns:    totalConnections,
 		centroids:   centroids,
 		cellVols:    cellVols,
 		connections: connections,
@@ -130,33 +156,17 @@ func New1DMesh(length float64, numCells int) *Mesh {
 }
 
 //
-// Analytical solution
-//
-
-func CalculateAnalytical(mesh *Mesh, velocity float64) []float64 {
-	field := make([]float64, mesh.numCells)
-
-	for i := range field {
-		x := mesh.centroids[i]
-		coeff := (math.Exp(RHO*velocity*x/GAMMA) - 1) /
-			(math.Exp(RHO*velocity*LENGTH/GAMMA) - 1)
-		field[i] = PHI_0 + coeff*(PHI_L-PHI_0)
-	}
-
-	return field
-}
-
-//
 // Output helpers
 //
 
-// Writes a CSV to the writer supplied
+// Writes a CSV to the output writer supplied
 func WriteToCSV(
 	out io.Writer,
 	mesh *Mesh,
 	analytic []float64,
+	numericCDS []float64,
 ) {
-	headers := []string{"x", "phi_analytical"}
+	headers := []string{"x", "phi_analytical", "phi_CDS"}
 
 	w := csv.NewWriter(out)
 	err := w.Write(headers)
@@ -168,6 +178,7 @@ func WriteToCSV(
 		record := []string{
 			strconv.FormatFloat(mesh.centroids[i], 'g', -1, 64),
 			strconv.FormatFloat(analytic[i], 'g', -1, 64),
+			strconv.FormatFloat(numericCDS[i], 'g', -1, 64),
 		}
 
 		err := w.Write(record)
