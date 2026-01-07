@@ -7,6 +7,7 @@ package main
 
 import (
 	"encoding/csv"
+	"flag"
 	"io"
 	"log"
 	"math"
@@ -37,16 +38,17 @@ const (
 // Main entrypoint and core functionality (ie look here first)
 //
 
-// TODO get flags to work for velocity and number of cells (which ostensibly is dx)
-
 func main() {
-	numCells := 10
-	var velocity float64 = 5
-	mesh := New1DMesh(LENGTH, numCells)
-	analytic := CalculateAnalytical(mesh, velocity)
-	numericCDS := CalculateNumeric(mesh, velocity, DivOperatorCDS)
-	numericUDS := CalculateNumeric(mesh, velocity, DivOperatorUDS)
-	numericPLDS := CalculateNumericPLDS(mesh, velocity)
+	// Parse command-line flags
+	numCells := flag.Int("n", 10, "number of cells")
+	velocity := flag.Float64("u", 5.0, "velocity")
+	flag.Parse()
+
+	mesh := New1DMesh(LENGTH, *numCells)
+	analytic := CalculateAnalytical(mesh, *velocity)
+	numericCDS := CalculateNumeric(mesh, *velocity, DivOperatorCDS)
+	numericUDS := CalculateNumeric(mesh, *velocity, DivOperatorUDS)
+	numericPLDS := CalculateNumericPLDS(mesh, *velocity)
 
 	WriteToCSV(os.Stdout, mesh, analytic, numericCDS, numericUDS, numericPLDS)
 }
@@ -206,6 +208,13 @@ func WriteToCSV(
 		log.Fatalln("error writing record to csv:", err)
 	}
 
+	// manually add boundary condition row for plotting
+	phi0String := strconv.FormatFloat(PHI_0, 'g', -1, 64)
+	err = w.Write([]string{"0.0", phi0String, phi0String, phi0String, phi0String})
+	if err != nil {
+		log.Fatalln("error writing record to csv:", err)
+	}
+
 	for i := range mesh.numCells {
 		record := []string{
 			strconv.FormatFloat(mesh.centroids[i], 'g', -1, 64),
@@ -219,6 +228,14 @@ func WriteToCSV(
 		if err != nil {
 			log.Fatalln("error writing record to csv:", err)
 		}
+	}
+
+	// right boundary condition
+	lengthString := strconv.FormatFloat(LENGTH, 'g', -1, 64)
+	phiLString := strconv.FormatFloat(PHI_L, 'g', -1, 64)
+	err = w.Write([]string{lengthString, phiLString, phiLString, phiLString, phiLString})
+	if err != nil {
+		log.Fatalln("error writing record to csv:", err)
 	}
 
 	w.Flush()
