@@ -45,18 +45,27 @@ func main() {
 	mesh := New1DMesh(LENGTH, numCells)
 	analytic := CalculateAnalytical(mesh, velocity)
 	numericCDS := CalculateNumeric(mesh, velocity, DivOperatorCDS)
+	numericUDS := CalculateNumeric(mesh, velocity, DivOperatorUDS)
+	numericPLDS := CalculateNumericPLDS(mesh, velocity)
 
-	WriteToCSV(os.Stdout, mesh, analytic, numericCDS)
+	WriteToCSV(os.Stdout, mesh, analytic, numericCDS, numericUDS, numericPLDS)
 }
 
 func CalculateAnalytical(mesh *Mesh, velocity float64) []float64 {
 	field := make([]float64, mesh.numCells)
 
+	// peclet number
+	Pe := RHO * velocity * LENGTH / GAMMA
+
 	for i := range field {
 		x := mesh.centroids[i]
-		coeff := (math.Exp(RHO*velocity*x/GAMMA) - 1) /
-			(math.Exp(RHO*velocity*LENGTH/GAMMA) - 1)
-		field[i] = PHI_0 + coeff*(PHI_L-PHI_0)
+
+		if math.Abs(Pe) < 1e-10 { // pure diffusion therefore linear profile
+			field[i] = PHI_0 + (x/LENGTH)*(PHI_L-PHI_0)
+		} else {
+			coeff := (math.Exp(Pe*x/LENGTH) - 1) / (math.Exp(Pe) - 1)
+			field[i] = PHI_0 + coeff*(PHI_L-PHI_0)
+		}
 	}
 
 	return field
@@ -75,9 +84,24 @@ func CalculateNumeric(mesh *Mesh, velocity float64, divOp DivOp) []float64 {
 	// 3) apply boundary conditions (they contribute to diagonal and RHS)
 	DirichletBC(system, PHI_0, LEFT_BOUND_MARKER)
 	DirichletBC(system, PHI_L, RIGHT_BOUND_MARKER)
-	
+
 	// 4) solve the matrix
-	system.SolveCG(field, 1e-6, 50)
+	system.SolveTDMA(field)
+	// system.SolveCG(field, 1e-6, 50) // (alternative - more general than TDMA)
+
+	return field
+}
+
+func CalculateNumericPLDS(mesh *Mesh, velocity float64) []float64 {
+	field := make([]float64, mesh.numCells)
+	system := NewFVSystem(mesh)
+
+	// PLDSOperator combines laplacian and divergence
+	PLDSOperator(mesh, system.matrix, RHO, velocity, GAMMA)
+	DirichletBC(system, PHI_0, LEFT_BOUND_MARKER)
+	DirichletBC(system, PHI_L, RIGHT_BOUND_MARKER)
+
+	system.SolveTDMA(field)
 
 	return field
 }
@@ -106,6 +130,7 @@ type Mesh struct {
 	connections []Connection
 	connDists   []float64
 	faceAreas   []float64 // in 1D this is moot but may as well be consistent with literature
+	faceNormals []float64 // 1D (either 1 or -1 but kept as a float for consistency)
 }
 
 // Creates a 1D mesh WITHOUT half cells at boundaries
@@ -125,24 +150,28 @@ func New1DMesh(length float64, numCells int) *Mesh {
 	connections := make([]Connection, totalConnections)
 	connDists := make([]float64, totalConnections)
 	faceAreas := make([]float64, totalConnections)
+	faceNormals := make([]float64, totalConnections)
 
-	// internal connections
+	// internal connections (these are all left->right)
 	for i := range numInternalConnections {
 		connections[i+1] = Connection{owner: int32(i), neighbour: int32(i + 1)}
 		connDists[i+1] = dx
 		faceAreas[i+1] = 1
+		faceNormals[i+1] = 1.0
 	}
 
 	// leftmost boundary
 	connections[0] = Connection{owner: 0, neighbour: LEFT_BOUND_MARKER}
 	connDists[0] = dx / 2 // half distance because of boundary
 	faceAreas[0] = 1
+	faceNormals[0] = -1 // negative normal (right->left)
 
 	// rightmost boundary
 	rmIdx := totalConnections - 1
 	connections[rmIdx] = Connection{owner: int32(numCells - 1), neighbour: RIGHT_BOUND_MARKER}
 	connDists[rmIdx] = dx / 2
 	faceAreas[rmIdx] = 1
+	faceNormals[rmIdx] = 1
 
 	return &Mesh{
 		numCells:    numCells,
@@ -152,6 +181,7 @@ func New1DMesh(length float64, numCells int) *Mesh {
 		connections: connections,
 		connDists:   connDists,
 		faceAreas:   faceAreas,
+		faceNormals: faceNormals,
 	}
 }
 
@@ -165,8 +195,10 @@ func WriteToCSV(
 	mesh *Mesh,
 	analytic []float64,
 	numericCDS []float64,
+	numericUDS []float64,
+	numericPLDS []float64,
 ) {
-	headers := []string{"x", "phi_analytical", "phi_CDS"}
+	headers := []string{"x", "phi_analytical", "phi_CDS", "phi_UDS", "phi_PLDS"}
 
 	w := csv.NewWriter(out)
 	err := w.Write(headers)
@@ -179,6 +211,8 @@ func WriteToCSV(
 			strconv.FormatFloat(mesh.centroids[i], 'g', -1, 64),
 			strconv.FormatFloat(analytic[i], 'g', -1, 64),
 			strconv.FormatFloat(numericCDS[i], 'g', -1, 64),
+			strconv.FormatFloat(numericUDS[i], 'g', -1, 64),
+			strconv.FormatFloat(numericPLDS[i], 'g', -1, 64),
 		}
 
 		err := w.Write(record)

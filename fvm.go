@@ -1,5 +1,9 @@
 package main
 
+import (
+	"math"
+)
+
 //
 // Data structures
 //
@@ -71,15 +75,66 @@ func LaplacianOperator(mesh *Mesh, matrix *LDUMatrix, gamma float64) {
 type DivOp func(mesh *Mesh, matrix *LDUMatrix, rho, U float64)
 
 func DivOperatorCDS(mesh *Mesh, matrix *LDUMatrix, rho, U float64) {
-	// TODO
+	for i, conn := range mesh.connections {
+		faceArea := mesh.faceAreas[i]
+		faceNormal := mesh.faceNormals[i]
+		F := rho * U * faceArea * faceNormal
+		fluxCoeff := F / 2 // division by 2 due to CDS
+
+		matrix.lower[i] += fluxCoeff
+		matrix.upper[i] -= fluxCoeff
+
+		if conn.neighbour >= 0 { // internal faces only
+			matrix.diag[conn.owner] += fluxCoeff
+			matrix.diag[conn.neighbour] -= fluxCoeff
+		}
+	}
 }
 
 func DivOperatorUDS(mesh *Mesh, matrix *LDUMatrix, rho, U float64) {
-	// TODO
+	for i, conn := range mesh.connections {
+		faceArea := mesh.faceAreas[i]
+		faceNormal := mesh.faceNormals[i]
+		F := rho * U * faceArea * faceNormal
+
+		matrix.lower[i] -= max(-F, 0)
+		matrix.upper[i] -= max(F, 0)
+		matrix.diag[conn.owner] += max(F, 0) // outflow
+
+		if conn.neighbour >= 0 { // internal faces only
+			matrix.diag[conn.neighbour] += max(-F, 0)
+		}
+	}
 }
 
-func DivOperatorPLDS(mesh *Mesh, matrix *LDUMatrix, rho, U float64) {
-	// TODO
+// PLDSOperator implements the power law scheme which fundamentally blends
+// diffusion with advection according to the Peclet number and so you cannot
+// separate the diffusion and advection operators (it's its own sort of thing)
+func PLDSOperator(mesh *Mesh, matrix *LDUMatrix, rho, U, gamma float64) {
+	for i, conn := range mesh.connections {
+		faceArea := mesh.faceAreas[i]
+		faceNormal := mesh.faceNormals[i]
+		distance := mesh.connDists[i]
+
+		D := gamma * faceArea / distance
+		F := rho * U * faceArea * faceNormal
+
+		Pe := F / D
+
+		// Power law function: A(|Pe|) = max(0, (1 - 0.1|Pe|)^5)
+		absPe := math.Abs(Pe)
+		A := max(0, math.Pow(1-0.1*absPe, 5))
+
+		// Patankar eq5.34 page 91
+		matrix.lower[i] -= D*A + max(-F, 0)
+		matrix.upper[i] -= D*A + max(F, 0)
+
+		// Only add to diagonals for internal faces
+		if conn.neighbour >= 0 {
+			matrix.diag[conn.owner] += D*A + max(F, 0)
+			matrix.diag[conn.neighbour] += D*A + max(-F, 0)
+		}
+	}
 }
 
 //
