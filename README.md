@@ -3,7 +3,7 @@
 - Author: Jed Nelson
 - Email: jn1422@ic.ac.uk
 - CID: 02208047
-- Github repo: [](https://github.com/Jedsonofnel/CFD25-project1)
+- Github repo: [https://github.com/Jedsonofnel/CFD25-project1]
 
 ## Description
 
