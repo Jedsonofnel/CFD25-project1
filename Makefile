@@ -6,18 +6,18 @@ bin/cli:
 	go build -o ./bin/cli .
 
 peclet-sweep: bin/cli
-	@echo "Running Peclet number sweep (Pe = 0.1 to 50)..."
+	@echo "Running Peclet number sweep (Pe = 0.1 to 100)..."
 	@mkdir -p data
-	@for u in 0.1 0.2 0.5 1 2 5 10 20 50; do \
+	@for u in 0.1 0.2 0.5 1 2 5 10 20 50 100; do \
 		echo "  Pe = $$u"; \
-		./bin/cli -n 20 -u $$u > data/pe$$u.csv; \
+		./bin/cli -n 10 -u $$u > data/pe$$u.csv; \
 	done
 	@echo "Done! Data saved to data/"
 
 grid-sweep: bin/cli
-	@echo "Running grid refinement sweep (n = 5 to 160)..."
+	@echo "Running grid refinement sweep (n = 5 to 2560)..."
 	@mkdir -p data
-	@for n in 5 10 20 40 80 160; do \
+	@for n in 5 10 20 40 80 160 320 640 1280 2560; do \
 		echo "  n = $$n"; \
 		./bin/cli -n $$n -u 2.5 > data/grid$$n.csv; \
 	done

@@ -89,7 +89,6 @@ func CalculateNumeric(mesh *Mesh, velocity float64, divOp DivOp) []float64 {
 
 	// 4) solve the matrix
 	system.SolveTDMA(field)
-	// system.SolveCG(field, 1e-6, 50) // (alternative - more general than TDMA)
 
 	return field
 }

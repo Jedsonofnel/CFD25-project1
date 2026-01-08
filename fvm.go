@@ -79,14 +79,13 @@ func DivOperatorCDS(mesh *Mesh, matrix *LDUMatrix, rho, U float64) {
 		faceArea := mesh.faceAreas[i]
 		faceNormal := mesh.faceNormals[i]
 		F := rho * U * faceArea * faceNormal
-		fluxCoeff := F / 2 // division by 2 due to CDS
 
-		matrix.lower[i] += fluxCoeff
-		matrix.upper[i] -= fluxCoeff
+		matrix.lower[i] += F / 2
+		matrix.upper[i] -= F / 2
 
-		if conn.neighbour >= 0 { // internal faces only
-			matrix.diag[conn.owner] += fluxCoeff
-			matrix.diag[conn.neighbour] -= fluxCoeff
+		if conn.neighbour >= 0 {
+			matrix.diag[conn.owner] += F / 2
+			matrix.diag[conn.neighbour] -= F / 2
 		}
 	}
 }
@@ -99,9 +98,9 @@ func DivOperatorUDS(mesh *Mesh, matrix *LDUMatrix, rho, U float64) {
 
 		matrix.lower[i] -= max(-F, 0)
 		matrix.upper[i] -= max(F, 0)
-		matrix.diag[conn.owner] += max(F, 0) // outflow
 
-		if conn.neighbour >= 0 { // internal faces only
+		if conn.neighbour >= 0 {
+			matrix.diag[conn.owner] += max(F, 0)
 			matrix.diag[conn.neighbour] += max(-F, 0)
 		}
 	}
@@ -137,33 +136,17 @@ func PLDSOperator(mesh *Mesh, matrix *LDUMatrix, rho, U, gamma float64) {
 	}
 }
 
-//
-// BCs. These are treated like source terms that decorate the system (rather
-// than stateful)
-//
-
 // DirichletBC applies the diag and RHS contributions for the FVM
 // discretisation to all connections where neighbour matches the marker
 func DirichletBC(system *FVSystem, value float64, marker int32) {
 	matrix := system.matrix
 	for i, conn := range matrix.conns {
 		if conn.neighbour == marker {
-			fluxCoeff := -matrix.lower[i] // a_n
-			matrix.diag[conn.owner] += fluxCoeff
-			system.rhs[conn.owner] += value * fluxCoeff // phi_bc * a_n
-		}
-	}
-}
+			bcCoeff := -matrix.lower[i]
+			diagCoeff := -matrix.upper[i]
 
-// NeumannFluxBC applies the flux source to the rhs inside system, is not used
-// for this project but wanted to demonstrate how this "simple data
-// transformation" architecture could be extended.  It's neat because it's not
-// OOP.
-func NeumannFluxBC(system *FVSystem, mesh *Mesh, marker int32, flux float64) {
-	for i, conn := range system.matrix.conns {
-		if conn.neighbour == marker {
-			faceArea := mesh.faceAreas[i]
-			system.rhs[conn.owner] += flux * faceArea
+			matrix.diag[conn.owner] += diagCoeff
+			system.rhs[conn.owner] += value * bcCoeff // phi_bc * a_n
 		}
 	}
 }
@@ -224,94 +207,13 @@ func (sys *FVSystem) SolveTDMA(x []float64) {
 	}
 }
 
-// SolveCG solves a system without the tridiagonal assumption - uses conjugate
-// gradient iterative approach without a preconditioner.  Done for a laugh.
-// See: https://www.cs.cmu.edu/~quake-papers/painless-conjugate-gradient.pdf
-func (sys *FVSystem) SolveCG(x []float64, tolerance float64, maxIters int) {
-	n := len(sys.matrix.diag)
-	r := make([]float64, n)
-	d := make([]float64, n)
-	Ad := make([]float64, n)
-
-	A := sys.matrix
-	b := sys.rhs
-
-	Ax := A.MatVec(x, r)
-	for i, val := range Ax {
-		r[i] = b[i] - val
-		d[i] = r[i]
-	}
-
-	var rDotr float64 = 0
-	for _, val := range r {
-		rDotr += val * val
-	}
-
-	recomputeAxInterval := 50
-
-	threshold := tolerance * tolerance * rDotr
-	for iter := 0; iter < maxIters && rDotr > threshold; iter++ {
-		Ad = A.MatVec(d, Ad)
-
-		var dDotAd float64 = 0
-		for i, val := range d {
-			dDotAd += val * Ad[i]
-		}
-
-		alpha := rDotr / dDotAd
-
-		for i, val := range x {
-			x[i] = val + alpha*d[i]
-		}
-
-		if iter%recomputeAxInterval == 0 {
-			Ax = A.MatVec(x, r)
-			for i, val := range Ax {
-				r[i] = b[i] - val
-			}
-		} else {
-			for i, val := range r {
-				r[i] = val - alpha*Ad[i]
-			}
-		}
-
-		rDotrOld := rDotr
-		rDotr = 0
-		for _, val := range r {
-			rDotr += val * val
-		}
-
-		beta := rDotr / rDotrOld
-
-		for i, val := range d {
-			d[i] = r[i] + beta*val
-		}
-	}
-}
-
-//
-// Matrix helpers
-//
-
-// MatVec mutates y such that y = Ax, returns the slice header y
-func (m *LDUMatrix) MatVec(x, y []float64) []float64 {
-	// zero output
-	for i := range y {
-		y[i] = 0
-	}
-
-	// diagonal contribution
+// Wipe zeros all matrix coefficients
+func (m *LDUMatrix) Wipe() {
 	for i := range m.diag {
-		y[i] += m.diag[i] * x[i]
+		m.diag[i] = 0
 	}
-
-	// off-diagonal contributions from internal faces only
-	for i, conn := range m.conns {
-		if conn.neighbour >= 0 { // internal only
-			y[conn.owner] += m.lower[i] * x[conn.neighbour]
-			y[conn.neighbour] += m.upper[i] * x[conn.owner]
-		}
+	for i := range m.lower {
+		m.lower[i] = 0
+		m.upper[i] = 0
 	}
-
-	return y
 }
